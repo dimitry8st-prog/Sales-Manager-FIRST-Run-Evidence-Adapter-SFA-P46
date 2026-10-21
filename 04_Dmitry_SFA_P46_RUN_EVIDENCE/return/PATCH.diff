@@ -1,0 +1,1573 @@
+diff --git a/candidate_tests/test_hashes.py b/candidate_tests/test_hashes.py
+new file mode 100644
+--- /dev/null
++++ b/candidate_tests/test_hashes.py
+@@ -0,0 +1,246 @@
++"""Побайтовая точность, детерминизм и чистая граница адаптера."""
++
++from contextlib import ExitStack
++from copy import deepcopy
++import hashlib
++import inspect
++import json
++import os
++from pathlib import Path
++import socket
++import subprocess
++import time
++import unittest
++from unittest.mock import patch
++
++from audit_release.command_evidence import build_run_evidence
++
++
++def canonical(value):
++    return json.dumps(value, ensure_ascii=False, sort_keys=True,
++                      separators=(",", ":"), allow_nan=False).encode("utf-8")
++
++
++def inputs():
++    report = {
++        "schema_version": "FIRST_OFFLINE_UNITTEST_RUN_V1",
++        "records": [{
++            "release_id": "r", "suite_id": "s", "case_id": "z",
++            "attempt": 7, "status": "PASS", "exit_code": 0, "skip_count": 0,
++        }, {
++            "release_id": "r", "suite_id": "s", "case_id": "a",
++            "attempt": 7, "status": "FAIL", "exit_code": 1, "skip_count": 0,
++        }],
++        "counts": {"tests_run": 2, "failures": 1, "errors": 0, "skips": 0},
++        "stdout": "Привет\r\nCafe\u0301\n\x00\t\x7f",
++        "stderr": "ошибка\r\n",
++    }
++    kwargs = {
++        "release_id": "r", "attempt": 7,
++        "bindings": [{"test_id": "tests.z", "suite_id": "s", "case_id": "z"},
++                     {"test_id": "tests.a", "suite_id": "s", "case_id": "a"}],
++        "command": {"key": "RUN/Main", "argv": ["python", "тест.py", "Cafe\u0301"],
++                    "cwd": "C:/Путь", "interpreter": "Python 3.12"},
++        "test_artifacts": [{"key": "Tests/Z.py", "content": b"\xff\x00\r\n"},
++                           {"key": "Tests/A.py", "content": b""}],
++    }
++    return report, kwargs
++
++
++class HashAndPurityTests(unittest.TestCase):
++    def test_public_function_signature(self):
++        parameters = inspect.signature(build_run_evidence).parameters
++        self.assertEqual(tuple(parameters), ("report", "release_id", "bindings", "attempt",
++                                             "command", "test_artifacts"))
++        self.assertEqual(parameters["report"].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
++        self.assertIs(parameters["report"].default, inspect.Parameter.empty)
++        for name in ("release_id", "bindings", "attempt", "command", "test_artifacts"):
++            self.assertEqual(parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
++            if name != "attempt":
++                self.assertIs(parameters[name].default, inspect.Parameter.empty)
++        self.assertEqual(parameters["attempt"].default, 1)
++
++    def test_exact_envelope_fields_types_and_flags(self):
++        report, kwargs = inputs()
++        output = build_run_evidence(report, **kwargs)
++        self.assertIs(type(output), dict)
++        self.assertEqual(set(output), {"schema_version", "records", "report_sha256",
++                                      "identity_snapshot", "raw_outputs",
++                                      "external_effect_authorized", "gate_acceptance"})
++        self.assertEqual(output["schema_version"], "FIRST_RUN_EVIDENCE_ENVELOPE_V1")
++        self.assertIs(output["external_effect_authorized"], False)
++        self.assertIs(output["gate_acceptance"], False)
++        self.assertIs(type(output["records"]), list)
++        self.assertTrue(all(type(record) is dict for record in output["records"]))
++        snapshot = output["identity_snapshot"]
++        self.assertIs(type(snapshot), dict)
++        self.assertEqual(set(snapshot), {"schema_version", "artifacts"})
++        self.assertEqual(snapshot["schema_version"], "FIRST_TEST_IDENTITY_SNAPSHOT_V1")
++        self.assertIs(type(snapshot["artifacts"]), list)
++        for artifact in snapshot["artifacts"]:
++            self.assertIs(type(artifact), dict)
++            self.assertEqual(set(artifact), {"kind", "key", "sha256"})
++            self.assertTrue(all(type(value) is str for value in artifact.values()))
++            self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
++        self.assertIs(type(output["raw_outputs"]), dict)
++        self.assertEqual(set(output["raw_outputs"]), {"stdout", "stderr"})
++        for stream in output["raw_outputs"].values():
++            self.assertIs(type(stream), dict)
++            self.assertEqual(set(stream), {"content", "sha256", "size_bytes"})
++            self.assertIs(type(stream["content"]), bytes)
++            self.assertIs(type(stream["size_bytes"]), int)
++            self.assertIs(type(stream["sha256"]), str)
++
++    def test_report_canonical_hash_preserves_record_list_order(self):
++        report, kwargs = inputs()
++        output = build_run_evidence(report, **kwargs)
++        self.assertEqual(output["records"], report["records"])
++        self.assertEqual([r["case_id"] for r in output["records"]], ["z", "a"])
++        self.assertEqual(output["report_sha256"], hashlib.sha256(canonical(report)).hexdigest())
++        report["records"].reverse()
++        changed = build_run_evidence(report, **kwargs)
++        self.assertNotEqual(output["report_sha256"], changed["report_sha256"])
++
++    def test_mapping_insertion_order_does_not_change_hashes(self):
++        report, kwargs = inputs()
++        expected = build_run_evidence(report, **kwargs)
++        report = dict(reversed(list(report.items())))
++        report["counts"] = dict(reversed(list(report["counts"].items())))
++        report["records"] = [dict(reversed(list(record.items()))) for record in report["records"]]
++        kwargs["command"] = dict(reversed(list(kwargs["command"].items())))
++        self.assertEqual(build_run_evidence(report, **kwargs), expected)
++
++    def test_command_hash_exact_canonical_bytes_and_key_excluded(self):
++        report, kwargs = inputs()
++        command = kwargs["command"]
++        output = build_run_evidence(report, **kwargs)
++        entry = output["identity_snapshot"]["artifacts"][0]
++        expected = hashlib.sha256(canonical({k: command[k]
++                                           for k in ("argv", "cwd", "interpreter")})).hexdigest()
++        self.assertEqual(entry, {"kind": "COMMAND", "key": "run/main", "sha256": expected})
++        kwargs["command"]["key"] = "another/key"
++        changed = build_run_evidence(report, **kwargs)["identity_snapshot"]["artifacts"][0]
++        self.assertEqual(changed["sha256"], entry["sha256"])
++        self.assertEqual(changed["key"], "another/key")
++
++    def test_every_command_component_affects_hash(self):
++        report, kwargs = inputs()
++        original = build_run_evidence(report, **kwargs)["identity_snapshot"]["artifacts"][0]["sha256"]
++        for field in ("argv", "cwd", "interpreter"):
++            with self.subTest(field=field):
++                changed = deepcopy(kwargs)
++                if field == "argv":
++                    changed["command"][field].reverse()
++                else:
++                    changed["command"][field] += "x"
++                actual = build_run_evidence(report, **changed)["identity_snapshot"]["artifacts"][0]["sha256"]
++                self.assertNotEqual(actual, original)
++
++    def test_snapshot_sorted_and_test_hashes_use_arbitrary_exact_bytes(self):
++        report, kwargs = inputs()
++        snapshot = build_run_evidence(report, **kwargs)["identity_snapshot"]
++        self.assertEqual([(x["kind"], x["key"]) for x in snapshot["artifacts"]],
++                         [("COMMAND", "run/main"), ("TEST", "tests/a.py"), ("TEST", "tests/z.py")])
++        expected = {item["key"].lower(): hashlib.sha256(item["content"]).hexdigest()
++                    for item in kwargs["test_artifacts"]}
++        for item in snapshot["artifacts"][1:]:
++            self.assertEqual(item["sha256"], expected[item["key"]])
++
++    def test_raw_outputs_preserve_unicode_crlf_controls_hash_and_size(self):
++        report, kwargs = inputs()
++        output = build_run_evidence(report, **kwargs)
++        for name in ("stdout", "stderr"):
++            raw = report[name].encode("utf-8")
++            self.assertEqual(output["raw_outputs"][name], {
++                "content": raw, "sha256": hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw),
++            })
++
++    def test_no_unicode_or_line_ending_normalization(self):
++        report, kwargs = inputs()
++        original = build_run_evidence(report, **kwargs)
++        for name in ("stdout", "stderr"):
++            changed = deepcopy(report)
++            changed[name] = changed[name].replace("\r\n", "\n")
++            output = build_run_evidence(changed, **kwargs)
++            self.assertNotEqual(output["report_sha256"], original["report_sha256"])
++            self.assertNotEqual(output["raw_outputs"][name], original["raw_outputs"][name])
++        changed = deepcopy(kwargs)
++        changed["command"]["argv"][-1] = "Café"
++        output = build_run_evidence(report, **changed)
++        self.assertNotEqual(output["identity_snapshot"], original["identity_snapshot"])
++
++    def test_input_preserved_and_output_containers_detached(self):
++        report, kwargs = inputs()
++        before = deepcopy((report, kwargs))
++        first = build_run_evidence(report, **kwargs)
++        second = build_run_evidence(report, **kwargs)
++        expected_second = deepcopy(second)
++        self.assertEqual((report, kwargs), before)
++        self.assertIsNot(first, second)
++        self.assertIsNot(first["records"], report["records"])
++        for index, record in enumerate(first["records"]):
++            self.assertIsNot(record, report["records"][index])
++            self.assertIsNot(record, second["records"][index])
++        self.assertIsNot(first["identity_snapshot"], second["identity_snapshot"])
++        self.assertIsNot(first["identity_snapshot"]["artifacts"],
++                         second["identity_snapshot"]["artifacts"])
++        self.assertIsNot(first["raw_outputs"], second["raw_outputs"])
++        self.assertIsNot(first["raw_outputs"]["stdout"], second["raw_outputs"]["stdout"])
++        first["records"][0]["status"] = "mutated"
++        first["identity_snapshot"]["artifacts"][0]["sha256"] = "mutated"
++        first["identity_snapshot"]["artifacts"].clear()
++        first["raw_outputs"]["stdout"]["content"] = b"mutated"
++        self.assertEqual((report, kwargs), before)
++        self.assertEqual(second, expected_second)
++        report["records"][0]["status"] = "mutated"
++        kwargs["command"]["argv"].clear()
++        kwargs["test_artifacts"].clear()
++        self.assertEqual(second, expected_second)
++
++    def test_nondefault_attempt_preserved_without_latest_attempt_policy(self):
++        report, kwargs = inputs()
++        first = build_run_evidence(report, **kwargs)
++        kwargs["attempt"] = 2
++        for record in report["records"]:
++            record["attempt"] = 2
++        second = build_run_evidence(report, **kwargs)
++        self.assertTrue(all(record["attempt"] == 7 for record in first["records"]))
++        self.assertTrue(all(record["attempt"] == 2 for record in second["records"]))
++        self.assertNotEqual(first["report_sha256"], second["report_sha256"])
++
++    def test_import_and_call_have_no_own_io_environment_clock_or_process(self):
++        source = (Path(__file__).resolve().parents[1] / "source" / "audit_release" /
++                  "command_evidence.py").read_text(encoding="utf-8")
++        code = compile(source, "command_evidence.py", "exec")
++        report, kwargs = inputs()
++
++        def forbidden(*args, **kwargs):
++            raise AssertionError("Forbidden own side effect")
++
++        class Environment(dict):
++            def __getitem__(self, key):
++                forbidden()
++
++            def get(self, *args, **kwargs):
++                forbidden()
++
++        with ExitStack() as stack:
++            for target in ("builtins.open", "builtins.print", "socket.socket",
++                           "subprocess.Popen", "subprocess.run", "os.open", "os.getenv",
++                           "os.listdir", "os.scandir", "os.getcwd", "time.time",
++                           "time.monotonic", "time.perf_counter"):
++                stack.enter_context(patch(target, side_effect=forbidden))
++            stack.enter_context(patch.object(os, "environ", Environment()))
++            for method in ("open", "read_bytes", "read_text", "write_bytes", "write_text",
++                           "stat", "lstat", "resolve", "exists", "is_file", "is_dir",
++                           "iterdir", "glob", "rglob", "cwd"):
++                stack.enter_context(patch.object(Path, method, side_effect=forbidden))
++            namespace = {"__name__": "audit_release.candidate_import_check",
++                         "__package__": "audit_release"}
++            exec(code, namespace)
++            actual = namespace["build_run_evidence"](report, **kwargs)
++        self.assertEqual(actual["records"], report["records"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/candidate_tests/test_integration.py b/candidate_tests/test_integration.py
+new file mode 100644
+--- /dev/null
++++ b/candidate_tests/test_integration.py
+@@ -0,0 +1,176 @@
++"""Настоящие зависимости P23/P46/P47, без имитации их результатов."""
++
++from copy import deepcopy
++import hashlib
++import sys
++import unittest
++
++from audit_release.command_evidence import build_run_evidence
++from audit_release.test_applicability import assess_applicability
++from audit_release.unittest_evidence import RecordingResult
++from qa_completion.offline.unittest_runner import run_suite
++
++
++def make_case(case_id, outcome, calls):
++    class ActualCase(unittest.TestCase):
++        def id(self):
++            return f"actual.{case_id}"
++
++        def runTest(self):
++            calls.append(case_id)
++            print(f"вывод:{case_id}")
++            print(f"диагностика:{case_id}", file=sys.stderr)
++            if outcome == "FAIL":
++                self.fail("actual failed assertion")
++            if outcome == "ERROR":
++                raise RuntimeError("actual error")
++            if outcome == "SKIP":
++                self.skipTest("actual skip")
++
++    return ActualCase()
++
++
++def configuration(case_ids):
++    return {
++        "release_id": "real-release", "attempt": 3,
++        "bindings": [{"test_id": f"actual.{case_id}", "suite_id": "real-suite",
++                      "case_id": case_id} for case_id in case_ids],
++        "command": {"key": "Runs/Actual", "argv": ["python", "RUN.py"],
++                    "cwd": ".", "interpreter": "Python 3.12"},
++        "test_artifacts": [{"key": "Tests/Actual.py", "content": b"assert True\r\n"}],
++    }
++
++
++def runner_report(suite, config, **options):
++    return run_suite(suite, release_id=config["release_id"], bindings=config["bindings"],
++                     attempt=config["attempt"], result_factory=RecordingResult, **options)
++
++
++def full_snapshot(snapshot):
++    result = deepcopy(snapshot)
++    for kind in ("SOURCE", "SCHEMA", "CONFIG", "DEPENDENCY", "RUNTIME"):
++        result["artifacts"].append({"kind": kind, "key": "trusted/pin",
++                                    "sha256": hashlib.sha256(kind.encode()).hexdigest()})
++    return result
++
++
++def assess(before, after):
++    pins = [{"kind": item["kind"], "key": item["key"]} for item in before["artifacts"]]
++    cases = [{"case_id": "consumer", "before_required": pins,
++              "after_required": deepcopy(pins), "footprint_complete": True}]
++    return assess_applicability(before, after, cases)["cases"][0]
++
++
++class RealIntegrationTests(unittest.TestCase):
++    def test_real_p23_p46_mixed_four_statuses_execute_exactly_once(self):
++        case_ids = ["success", "failure", "error", "skip"]
++        outcomes = ["PASS", "FAIL", "ERROR", "SKIP"]
++        calls = []
++        config = configuration(case_ids)
++        before = deepcopy(config)
++        suite = unittest.TestSuite([
++            unittest.TestSuite([make_case(case_ids[0], outcomes[0], calls)]),
++            unittest.TestSuite([make_case(case_id, outcome, calls)
++                                for case_id, outcome in zip(case_ids[1:], outcomes[1:])]),
++        ])
++        report = runner_report(suite, config)
++        self.assertEqual(report["counts"], {"tests_run": 4, "failures": 1, "errors": 1, "skips": 1})
++        report_before = deepcopy(report)
++        output = build_run_evidence(report, **config)
++        self.assertEqual(calls, case_ids)
++        self.assertEqual(config, before)
++        self.assertEqual(report, report_before)
++        self.assertEqual(output["records"], report["records"])
++        by_case = {record["case_id"]: record for record in output["records"]}
++        for case_id, outcome in zip(case_ids, outcomes):
++            self.assertEqual(by_case[case_id]["status"], outcome)
++            self.assertEqual(by_case[case_id]["attempt"], 3)
++        self.assertEqual(output["raw_outputs"]["stdout"]["content"],
++                         "".join(f"вывод:{case_id}\n" for case_id in case_ids).encode())
++        self.assertEqual(output["raw_outputs"]["stderr"]["content"],
++                         "".join(f"диагностика:{case_id}\n" for case_id in case_ids).encode())
++
++    def test_real_failfast_preserves_only_visited_case_without_invented_pass(self):
++        calls = []
++        config = configuration(["failed", "unvisited"])
++        suite = unittest.TestSuite([make_case("failed", "FAIL", calls),
++                                    make_case("unvisited", "PASS", calls)])
++        report = runner_report(suite, config, failfast=True)
++        output = build_run_evidence(report, **config)
++        self.assertEqual(calls, ["failed"])
++        self.assertEqual(len(output["records"]), 1)
++        self.assertEqual(output["records"][0]["case_id"], "failed")
++        self.assertEqual(output["records"][0]["status"], "FAIL")
++        self.assertEqual(report["counts"], {"tests_run": 1, "failures": 1, "errors": 0, "skips": 0})
++
++    def test_real_empty_suite_does_not_become_general_pass(self):
++        config = configuration([])
++        report = runner_report(unittest.TestSuite(), config)
++        output = build_run_evidence(report, **config)
++        self.assertEqual(output["records"], [])
++        self.assertEqual(output["raw_outputs"]["stdout"]["content"], b"")
++        self.assertEqual(output["raw_outputs"]["stderr"]["content"], b"")
++        self.assertNotIn("PASS", output)
++        self.assertIs(output["gate_acceptance"], False)
++        self.assertIs(output["external_effect_authorized"], False)
++
++    def test_empty_report_can_have_unvisited_bindings(self):
++        config = configuration(["unvisited"])
++        report = {"schema_version": "FIRST_OFFLINE_UNITTEST_RUN_V1", "records": [],
++                  "counts": {"tests_run": 0, "failures": 0, "errors": 0, "skips": 0},
++                  "stdout": "", "stderr": ""}
++        self.assertEqual(build_run_evidence(report, **config)["records"], [])
++
++    def real_output(self):
++        calls = []
++        config = configuration(["success"])
++        report = runner_report(unittest.TestSuite([make_case("success", "PASS", calls)]), config)
++        return report, config, build_run_evidence(report, **config)
++
++    def test_real_p47_equal_partial_identity_is_unknown(self):
++        _, _, output = self.real_output()
++        result = assess(output["identity_snapshot"], output["identity_snapshot"])
++        self.assertEqual(result["status"], "UNKNOWN")
++        self.assertEqual(result["missing_dimensions"],
++                         sorted(["SOURCE", "SCHEMA", "CONFIG", "DEPENDENCY", "RUNTIME"]))
++        self.assertEqual(result["changed"], [])
++
++    def test_real_p47_full_dimensions_match(self):
++        _, _, output = self.real_output()
++        snapshot = full_snapshot(output["identity_snapshot"])
++        result = assess(snapshot, snapshot)
++        self.assertEqual(result["status"], "MATCH")
++        self.assertEqual(result["missing_dimensions"], [])
++        self.assertEqual(result["unknown"], [])
++
++    def test_real_p47_changed_command_is_affected(self):
++        report, config, output = self.real_output()
++        config["command"]["argv"].append("--changed")
++        current = build_run_evidence(report, **config)
++        result = assess(full_snapshot(output["identity_snapshot"]),
++                        full_snapshot(current["identity_snapshot"]))
++        self.assertEqual(result["status"], "CHANGED_AFFECTED")
++        self.assertEqual([(x["kind"], x["key"], x["reason"]) for x in result["changed"]],
++                         [("COMMAND", "runs/actual", "HASH_CHANGED")])
++
++    def test_real_p47_changed_test_bytes_are_affected(self):
++        report, config, output = self.real_output()
++        config["test_artifacts"][0]["content"] += b"# changed\n"
++        current = build_run_evidence(report, **config)
++        result = assess(full_snapshot(output["identity_snapshot"]),
++                        full_snapshot(current["identity_snapshot"]))
++        self.assertEqual(result["status"], "CHANGED_AFFECTED")
++        self.assertEqual([(x["kind"], x["key"], x["reason"]) for x in result["changed"]],
++                         [("TEST", "tests/actual.py", "HASH_CHANGED")])
++
++    def test_known_changed_identity_takes_priority_over_missing_dimensions(self):
++        report, config, output = self.real_output()
++        config["test_artifacts"][0]["content"] += b"changed"
++        current = build_run_evidence(report, **config)
++        result = assess(output["identity_snapshot"], current["identity_snapshot"])
++        self.assertEqual(result["status"], "CHANGED_AFFECTED")
++        self.assertEqual(len(result["missing_dimensions"]), 5)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/candidate_tests/test_validation.py b/candidate_tests/test_validation.py
+new file mode 100644
+--- /dev/null
++++ b/candidate_tests/test_validation.py
+@@ -0,0 +1,445 @@
++"""Проверки входного контракта SFA-P46-RUN-EVIDENCE R1."""
++
++from copy import deepcopy
++import unittest
++from unittest.mock import patch
++
++from audit_release.command_evidence import RunEvidenceError, build_run_evidence
++from audit_release.unittest_evidence import RecordingError, RecordingResult
++
++
++class StringSubclass(str):
++    pass
++
++
++class IntegerSubclass(int):
++    pass
++
++
++class ListSubclass(list):
++    pass
++
++
++class DictSubclass(dict):
++    pass
++
++
++class BytesSubclass(bytes):
++    pass
++
++
++def inputs():
++    report = {
++        "schema_version": "FIRST_OFFLINE_UNITTEST_RUN_V1",
++        "records": [{
++            "release_id": "release", "suite_id": "suite", "case_id": "case",
++            "attempt": 1, "status": "PASS", "exit_code": 0, "skip_count": 0,
++        }],
++        "counts": {"tests_run": 1, "failures": 0, "errors": 0, "skips": 0},
++        "stdout": "", "stderr": "",
++    }
++    kwargs = {
++        "release_id": "release",
++        "bindings": [{"test_id": "tests.case", "suite_id": "suite", "case_id": "case"}],
++        "command": {"key": "run/main", "argv": ["python", "RUN.py"],
++                    "cwd": ".", "interpreter": "Python 3.12"},
++        "test_artifacts": [{"key": "tests/unit.py", "content": b"pass\n"}],
++    }
++    return report, kwargs
++
++
++class ValidationTests(unittest.TestCase):
++    def reject(self, report, kwargs):
++        with self.assertRaises(RunEvidenceError) as caught:
++            build_run_evidence(report, **kwargs)
++        self.assertIs(type(caught.exception.code), str)
++        self.assertEqual(caught.exception.code, "INVALID_INPUT")
++        self.assertEqual(str(caught.exception), "INVALID_INPUT")
++
++    def test_error_is_value_error(self):
++        self.assertTrue(issubclass(RunEvidenceError, ValueError))
++
++    def test_configuration_reuses_recording_validation_and_cause(self):
++        configurations = [
++            {"release_id": ""}, {"release_id": StringSubclass("release")},
++            {"attempt": 0}, {"attempt": -1}, {"attempt": True},
++            {"attempt": 1.0}, {"attempt": IntegerSubclass(1)},
++            {"bindings": ()}, {"bindings": ListSubclass()},
++            {"bindings": [{"test_id": "a", "suite_id": "s", "case_id": "c"},
++                          {"test_id": "b", "suite_id": "s", "case_id": "c"}]},
++            {"bindings": [{"test_id": "a", "suite_id": "s", "case_id": "a"},
++                          {"test_id": "a", "suite_id": "s", "case_id": "b"}]},
++        ]
++        for changes in configurations:
++            with self.subTest(changes=changes):
++                report, kwargs = inputs()
++                kwargs.update(changes)
++                with self.assertRaises(RunEvidenceError) as caught:
++                    build_run_evidence(report, **kwargs)
++                error = caught.exception
++                self.assertEqual(error.code, "INVALID_INPUT")
++                self.assertEqual(str(error), "INVALID_INPUT")
++                self.assertIsInstance(error.__cause__, RecordingError)
++                self.assertEqual(error.__cause__.code, "INVALID_CONFIGURATION")
++
++    def test_constructor_is_used_without_running_tests(self):
++        report, kwargs = inputs()
++        original = RecordingResult.__init__
++        calls = []
++
++        def observe(instance, **configuration):
++            calls.append(deepcopy(configuration))
++            return original(instance, **configuration)
++
++        with patch.object(RecordingResult, "__init__", observe), patch.object(
++            RecordingResult, "startTest", side_effect=AssertionError("test executed")
++        ), patch.object(
++            RecordingResult, "startTestRun", side_effect=AssertionError("run started")
++        ):
++            build_run_evidence(report, **kwargs)
++        self.assertEqual(calls, [{"release_id": "release", "bindings": kwargs["bindings"],
++                                  "attempt": 1}])
++
++    def test_recording_error_keeps_original_exception_identity(self):
++        report, kwargs = inputs()
++        original = RecordingError("INVALID_CONFIGURATION")
++        with patch.object(RecordingResult, "__init__", side_effect=original):
++            with self.assertRaises(RunEvidenceError) as caught:
++                build_run_evidence(report, **kwargs)
++        self.assertEqual(str(caught.exception), "INVALID_INPUT")
++        self.assertIs(caught.exception.__cause__, original)
++
++    def test_unexpected_constructor_exceptions_are_not_masked(self):
++        for error in (RuntimeError("sentinel"), MemoryError("sentinel"),
++                      KeyboardInterrupt(), SystemExit(8), ValueError("unexpected")):
++            with self.subTest(kind=type(error).__name__):
++                report, kwargs = inputs()
++                with patch.object(RecordingResult, "__init__", side_effect=error):
++                    with self.assertRaises(type(error)) as caught:
++                        build_run_evidence(report, **kwargs)
++                self.assertIs(caught.exception, error)
++
++    def test_configuration_identifier_boundaries_and_unicode_test_id(self):
++        report, kwargs = inputs()
++        kwargs["release_id"] = "r" * 128
++        kwargs["attempt"] = 123456789
++        kwargs["bindings"] = [{"test_id": "я" * 512,
++                               "suite_id": "s" * 128, "case_id": "c" * 128}]
++        report["records"][0].update(release_id=kwargs["release_id"],
++                                     attempt=kwargs["attempt"],
++                                     suite_id="s" * 128, case_id="c" * 128)
++        self.assertEqual(build_run_evidence(report, **kwargs)["records"], report["records"])
++
++    def test_binding_configuration_invalid_shapes_and_limits_keep_cause(self):
++        template = {"test_id": "tests.case", "suite_id": "suite", "case_id": "case"}
++        bad_bindings = [
++            [None], [DictSubclass(template)], [dict(template, extra=1)],
++            [{"test_id": "tests.case", "suite_id": "suite"}],
++            [{StringSubclass(k) if k == "test_id" else k: v for k, v in template.items()}],
++            [dict(template, test_id="x" * 513)], [dict(template, test_id="bad id")],
++            [dict(template, test_id="a\ud800")], [dict(template, suite_id="s" * 129)],
++            [dict(template, case_id="c" * 129)],
++            [dict(template, case_id="кириллица")],
++            [{"test_id": f"t{i}", "suite_id": "s", "case_id": f"c{i}"}
++             for i in range(10001)],
++        ]
++        for index, bindings in enumerate(bad_bindings):
++            with self.subTest(configuration=index):
++                report, kwargs = inputs()
++                kwargs["bindings"] = bindings
++                with self.assertRaises(RunEvidenceError) as caught:
++                    build_run_evidence(report, **kwargs)
++                self.assertEqual(str(caught.exception), "INVALID_INPUT")
++                self.assertIsInstance(caught.exception.__cause__, RecordingError)
++
++    def test_report_exact_type_and_fields(self):
++        report, kwargs = inputs()
++        for value in (None, [], DictSubclass(report)):
++            with self.subTest(value_type=type(value).__name__):
++                self.reject(value, kwargs)
++        for field in report:
++            value = deepcopy(report)
++            del value[field]
++            with self.subTest(missing=field):
++                self.reject(value, kwargs)
++        value = deepcopy(report)
++        value["extra"] = None
++        self.reject(value, kwargs)
++        value = {StringSubclass(k) if k == "stdout" else k: v for k, v in report.items()}
++        self.reject(value, kwargs)
++
++    def test_schema_exact_value_and_type(self):
++        for value in ("OTHER", None, 1, StringSubclass("FIRST_OFFLINE_UNITTEST_RUN_V1")):
++            with self.subTest(value=value):
++                report, kwargs = inputs()
++                report["schema_version"] = value
++                self.reject(report, kwargs)
++
++    def test_records_exact_container_and_limit(self):
++        for value in (None, (), {}, ListSubclass()):
++            with self.subTest(kind=type(value).__name__):
++                report, kwargs = inputs()
++                report["records"] = value
++                self.reject(report, kwargs)
++        report, kwargs = inputs()
++        report["records"] *= 10001
++        report["counts"]["tests_run"] = 10001
++        self.reject(report, kwargs)
++
++    def test_records_and_bindings_allow_exactly_ten_thousand(self):
++        report, kwargs = inputs()
++        kwargs["bindings"] = [
++            {"test_id": f"tests.c{i}", "suite_id": "suite", "case_id": f"c{i}"}
++            for i in range(10000)
++        ]
++        template = report["records"][0]
++        report["records"] = [dict(template, case_id=f"c{i}") for i in range(10000)]
++        report["counts"]["tests_run"] = 10000
++        output = build_run_evidence(report, **kwargs)
++        self.assertEqual(output["records"], report["records"])
++
++    def test_record_exact_type_and_fields(self):
++        report, kwargs = inputs()
++        original = report["records"][0]
++        for value in (None, [], DictSubclass(original)):
++            with self.subTest(kind=type(value).__name__):
++                changed = deepcopy(report)
++                changed["records"] = [value]
++                self.reject(changed, kwargs)
++        for field in original:
++            with self.subTest(missing=field):
++                changed = deepcopy(report)
++                del changed["records"][0][field]
++                self.reject(changed, kwargs)
++        for value in (dict(original, extra=1),
++                      {StringSubclass(k) if k == "status" else k: v
++                       for k, v in original.items()}):
++            changed = deepcopy(report)
++            changed["records"] = [value]
++            self.reject(changed, kwargs)
++
++    def test_record_identifiers_attempt_and_exact_types(self):
++        changes = {
++            "release_id": ["other", None, StringSubclass("release")],
++            "suite_id": ["other", None, StringSubclass("suite")],
++            "case_id": ["other", None, StringSubclass("case")],
++            "attempt": [2, True, 1.0, IntegerSubclass(1)],
++            "status": ["UNKNOWN", None, StringSubclass("PASS")],
++            "exit_code": [True, 0.0, IntegerSubclass(0), -1],
++            "skip_count": [False, 0.0, IntegerSubclass(0), -1],
++        }
++        for field, values in changes.items():
++            for value in values:
++                with self.subTest(field=field, value_type=type(value).__name__, value=value):
++                    report, kwargs = inputs()
++                    report["records"][0][field] = value
++                    self.reject(report, kwargs)
++
++    def test_status_triplets_are_exact(self):
++        valid = {"PASS": (0, 0), "FAIL": (1, 0), "ERROR": (1, 0), "SKIP": (0, 1)}
++        for status, pair in valid.items():
++            for exit_code in (0, 1, 2):
++                for skip_count in (0, 1, 2):
++                    with self.subTest(status=status, exit_code=exit_code, skip_count=skip_count):
++                        report, kwargs = inputs()
++                        record = report["records"][0]
++                        record.update(status=status, exit_code=exit_code, skip_count=skip_count)
++                        report["counts"].update(failures=int(status == "FAIL"),
++                                                errors=int(status == "ERROR"),
++                                                skips=int(status == "SKIP"))
++                        if (exit_code, skip_count) == pair:
++                            self.assertEqual(build_run_evidence(report, **kwargs)["records"],
++                                             report["records"])
++                        else:
++                            self.reject(report, kwargs)
++
++    def test_duplicate_or_unbound_record_pair_rejected(self):
++        report, kwargs = inputs()
++        report["records"].append(deepcopy(report["records"][0]))
++        report["counts"]["tests_run"] = 2
++        self.reject(report, kwargs)
++        report, kwargs = inputs()
++        kwargs["bindings"] = []
++        self.reject(report, kwargs)
++
++    def test_counts_exact_type_fields_values_and_consistency(self):
++        report, kwargs = inputs()
++        for value in (None, [], DictSubclass(report["counts"])):
++            with self.subTest(kind=type(value).__name__):
++                changed = deepcopy(report)
++                changed["counts"] = value
++                self.reject(changed, kwargs)
++        for field in report["counts"]:
++            for value in (True, -1, 0.0, None, IntegerSubclass(report["counts"][field])):
++                with self.subTest(field=field, value=value):
++                    changed = deepcopy(report)
++                    changed["counts"][field] = value
++                    self.reject(changed, kwargs)
++            changed = deepcopy(report)
++            del changed["counts"][field]
++            self.reject(changed, kwargs)
++            changed = deepcopy(report)
++            changed["counts"][field] += 1
++            self.reject(changed, kwargs)
++        changed = deepcopy(report)
++        changed["counts"]["extra"] = 0
++        self.reject(changed, kwargs)
++        changed = deepcopy(report)
++        changed["counts"] = {StringSubclass(k) if k == "errors" else k: v
++                             for k, v in report["counts"].items()}
++        self.reject(changed, kwargs)
++
++    def test_output_text_exact_type_and_surrogates(self):
++        for field in ("stdout", "stderr"):
++            for value in (None, b"text", 0, StringSubclass("text"), "\ud800", "a\udfff"):
++                with self.subTest(field=field, kind=type(value).__name__):
++                    report, kwargs = inputs()
++                    report[field] = value
++                    self.reject(report, kwargs)
++
++    def test_output_byte_limits_independent_per_stream(self):
++        limit = 4194304
++        report, kwargs = inputs()
++        report["stdout"] = "я" * (limit // 2)
++        report["stderr"] = "x" * limit
++        output = build_run_evidence(report, **kwargs)
++        self.assertEqual(output["raw_outputs"]["stdout"]["size_bytes"], limit)
++        self.assertEqual(output["raw_outputs"]["stderr"]["size_bytes"], limit)
++        for field in ("stdout", "stderr"):
++            with self.subTest(field=field):
++                changed = deepcopy(report)
++                changed[field] += "x"
++                self.reject(changed, kwargs)
++
++    def test_command_exact_type_and_fields(self):
++        report, kwargs = inputs()
++        original = kwargs["command"]
++        for value in (None, [], DictSubclass(original)):
++            with self.subTest(kind=type(value).__name__):
++                changed = deepcopy(kwargs)
++                changed["command"] = value
++                self.reject(report, changed)
++        for field in original:
++            changed = deepcopy(kwargs)
++            del changed["command"][field]
++            self.reject(report, changed)
++        changed = deepcopy(kwargs)
++        changed["command"]["extra"] = 1
++        self.reject(report, changed)
++        changed = deepcopy(kwargs)
++        changed["command"] = {StringSubclass(k) if k == "key" else k: v
++                              for k, v in original.items()}
++        self.reject(report, changed)
++
++    def test_argv_exact_container_count_and_members(self):
++        for value in (None, (), [], ListSubclass(["python"]), [None], [0],
++                      [""], [StringSubclass("python")], ["a"] * 257):
++            with self.subTest(kind=type(value).__name__, count=len(value) if value else 0):
++                report, kwargs = inputs()
++                kwargs["command"]["argv"] = value
++                self.reject(report, kwargs)
++        report, kwargs = inputs()
++        kwargs["command"]["argv"] = ["x"] * 256
++        build_run_evidence(report, **kwargs)
++
++    def test_command_string_character_limits_and_forbidden_characters(self):
++        for field in ("argv", "cwd", "interpreter"):
++            for value in (None, 0, "", StringSubclass("x"), "x" * 4097,
++                          "a\x00b", "a\x1fb", "a\x7fb", "a\ud800b", "a\udfffb"):
++                with self.subTest(field=field, kind=type(value).__name__):
++                    report, kwargs = inputs()
++                    kwargs["command"][field] = [value] if field == "argv" else value
++                    self.reject(report, kwargs)
++            report, kwargs = inputs()
++            value = "я" * 4096
++            kwargs["command"][field] = [value] if field == "argv" else value
++            build_run_evidence(report, **kwargs)
++
++    def test_all_c0_command_controls_rejected(self):
++        for field in ("argv", "cwd", "interpreter"):
++            for code in list(range(32)) + [127]:
++                with self.subTest(field=field, code=code):
++                    report, kwargs = inputs()
++                    value = "x" + chr(code)
++                    kwargs["command"][field] = [value] if field == "argv" else value
++                    self.reject(report, kwargs)
++
++    def test_artifact_keys_invalid_types_paths_and_windows_names(self):
++        invalid = [None, 1, StringSubclass("valid"), "", "/a", "a/", "a//b", ".", "..",
++                   "a/./b", "a/../b", "a.", "a./b", "a\\b", "a:b", "тест", "a b",
++                   "a\x00b", "a" * 2049]
++        reserved = ["CON", "PRN", "AUX", "NUL"] + [f"COM{i}" for i in range(1, 10)]
++        reserved += [f"LPT{i}" for i in range(1, 10)]
++        invalid += [f"a/{name.lower()}.txt" for name in reserved]
++        invalid += reserved
++        for value in invalid:
++            for location in ("command", "test_artifacts"):
++                with self.subTest(location=location, value_type=type(value).__name__, value=value):
++                    report, kwargs = inputs()
++                    if location == "command":
++                        kwargs["command"]["key"] = value
++                    else:
++                        kwargs["test_artifacts"][0]["key"] = value
++                    self.reject(report, kwargs)
++
++    def test_artifact_key_limits_valid_names_and_cross_kind_collision(self):
++        for key in ("a" * 2048, "a-b/C_d/file.ext", "COM0", "COM10", "LPT10", ".hidden"):
++            with self.subTest(key=key[:40]):
++                report, kwargs = inputs()
++                kwargs["command"]["key"] = key
++                kwargs["test_artifacts"][0]["key"] = key.upper()
++                output = build_run_evidence(report, **kwargs)
++                self.assertEqual([(x["kind"], x["key"]) for x in output["identity_snapshot"]["artifacts"]],
++                                 [("COMMAND", key.lower()), ("TEST", key.lower())])
++
++    def test_artifact_list_and_records_exact_types_and_fields(self):
++        report, kwargs = inputs()
++        for value in (None, (), ListSubclass()):
++            changed = deepcopy(kwargs)
++            changed["test_artifacts"] = value
++            self.reject(report, changed)
++        original = kwargs["test_artifacts"][0]
++        for value in (None, [], DictSubclass(original), {"key": "a"}, {"content": b""},
++                      dict(original, extra=1),
++                      {StringSubclass(k) if k == "content" else k: v
++                       for k, v in original.items()}):
++            changed = deepcopy(kwargs)
++            changed["test_artifacts"] = [value]
++            self.reject(report, changed)
++
++    def test_artifact_content_exact_bytes(self):
++        for value in (None, "text", bytearray(b"text"), memoryview(b"text"), BytesSubclass(b"text")):
++            with self.subTest(kind=type(value).__name__):
++                report, kwargs = inputs()
++                kwargs["test_artifacts"][0]["content"] = value
++                self.reject(report, kwargs)
++
++    def test_artifact_count_and_empty_artifacts(self):
++        report, kwargs = inputs()
++        kwargs["test_artifacts"] = []
++        self.assertEqual(len(build_run_evidence(report, **kwargs)["identity_snapshot"]["artifacts"]), 1)
++        kwargs["test_artifacts"] = [{"key": f"tests/{i}", "content": b""} for i in range(256)]
++        self.assertEqual(len(build_run_evidence(report, **kwargs)["identity_snapshot"]["artifacts"]), 257)
++        kwargs["test_artifacts"].append({"key": "tests/overflow", "content": b""})
++        self.reject(report, kwargs)
++
++    def test_artifact_duplicates_case_insensitive(self):
++        for key in ("tests/unit.py", "TESTS/UNIT.PY", "Tests/Unit.py"):
++            report, kwargs = inputs()
++            kwargs["test_artifacts"].append({"key": key, "content": b"different"})
++            self.reject(report, kwargs)
++
++    def test_artifact_individual_and_total_byte_limits(self):
++        limit = 4194304
++        report, kwargs = inputs()
++        kwargs["test_artifacts"] = [{"key": "a", "content": b"x" * limit},
++                                     {"key": "b", "content": b"y" * limit}]
++        self.assertEqual(len(build_run_evidence(report, **kwargs)["identity_snapshot"]["artifacts"]), 3)
++        kwargs["test_artifacts"].append({"key": "c", "content": b"z"})
++        self.reject(report, kwargs)
++        kwargs["test_artifacts"] = [{"key": "a", "content": b"x" * (limit + 1)}]
++        self.reject(report, kwargs)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/return/IMPLEMENTATION_RU.md b/return/IMPLEMENTATION_RU.md
+new file mode 100644
+--- /dev/null
++++ b/return/IMPLEMENTATION_RU.md
+@@ -0,0 +1,106 @@
++# Реализация SFA-P46-RUN-EVIDENCE R1
++
++Реализован один новый компонент: `audit_release.command_evidence`.
++Публичный интерфейс сохранён в точности:
++
++```python
++class RunEvidenceError(ValueError): ...
++def build_run_evidence(report, *, release_id, bindings, attempt=1,
++                       command, test_artifacts) -> dict: ...
++```
++
++Адаптер принимает уже полученный отчёт P23 и переданные вызывающим кодом
++описание команды и байты тестов. Он проверяет внутреннюю согласованность данных
++и возвращает `FIRST_RUN_EVIDENCE_ENVELOPE_V1`. Сам адаптер не запускает тесты
++или описанную команду. Принятые P23, P46 RecordingResult и P47 остаются исходными.
++
++## Алгоритм
++
++1. Создать принятый `RecordingResult` только для проверки `release_id`, `bindings`,
++   `attempt`. Только `RecordingError` переводится в `RunEvidenceError('INVALID_INPUT')`
++   через `raise ... from error`. Неожиданные ошибки распространяются неизменными.
++2. `_check_report` проверяет точные типы, наборы полей, схему, записи и счётчики.
++   Пары `(suite_id, case_id)` должны принадлежать проверенному bindings и быть
++   уникальны. Семь полей каждой записи копируются в новые dict в исходном порядке.
++   Отсутствующие случаи после failfast не добавляются; пустой список не означает PASS.
++3. `_output_bytes` кодирует stdout/stderr строгим UTF-8 без нормализации Unicode
++   или переводов строк, отклоняет суррогаты и превышение ограничения каждого потока.
++   Управляющие символы в этих потоках разрешены; это не правила command-строк.
++4. `_command_artifact` проверяет command. `_artifact_key` обеспечивает правила ключа
++   P47 и приводит ASCII-регистр к нижнему. `_command_text` проверяет аргументы,
++   рабочий каталог и интерпретатор. Хешируется только `{argv,cwd,interpreter}`;
++   `key` служит идентификатором и в хеш команды не входит.
++5. `_test_artifacts` проверяет список тестовых артефактов, точный тип bytes,
++   индивидуальный/суммарный размер и отсутствие дубликатов TEST без учёта регистра.
++   Каждому TEST соответствует SHA-256 точных переданных байтов. Совпадение ключа
++   COMMAND и TEST разрешено, поскольку kind различается.
++6. `_canonical_sha256` использует точно `json.dumps(..., ensure_ascii=False,
++   sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')`.
++   Хеш отчёта охватывает весь принятый report. Словарные ключи канонизируются,
++   порядок списка records сохраняется. Снимок артефактов сортируется по `(kind,key)`.
++7. Возвращаются ровно семь полей оболочки, новые независимые контейнеры и точные
++   UTF-8 bytes вывода с их фактическими размерами и SHA-256.
++   `external_effect_authorized=False`, `gate_acceptance=False`.
++
++## Ограничения входа
++
++| Вход | Ограничение |
++|---|---|
++| Контейнеры/ключи | Точные встроенные dict/list/str; поля ровно по контракту |
++| release/bindings/attempt | Проверяет исходный RecordingResult; bool вместо int запрещён |
++| records | 0..10 000; точные семь полей; уникальные известные пары |
++| PASS / FAIL / ERROR / SKIP | `(exit_code,skip_count)`: `(0,0)/(1,0)/(1,0)/(0,1)` |
++| counts | Точные неотрицательные int; tests_run и исходы совпадают с records |
++| stdout / stderr | Строгий UTF-8; каждый до 4 194 304 байт включительно |
++| Ключ артефакта | ASCII 1..2048, сегменты `[A-Za-z0-9_.-]+`, без `.`, `..`, конечной точки, Windows reserved basename |
++| argv | Точный list 1..256 непустых точных str, до 4096 символов каждая |
++| cwd / interpreter | Непустые точные str до 4096 символов |
++| command-строки | Запрещены C0 U+0000..001F, DEL U+007F и суррогаты |
++| test_artifacts | Точный list 0..256; каждый dict ровно key/content |
++| content | Точные bytes, до 4 194 304 каждый, суммарно до 8 388 608 |
++
++## Карта «требование → код → собственная проверка → сырой журнал»
++
++Все перечисленные проверки находятся в `candidate_tests/`.
++Полный фактический вывод: `return/logs/03_RUN_CANDIDATE_TESTS.stderr.log`.
++Публичная совместимость отдельно подтверждается
++`return/logs/02_RUN_PUBLIC_TESTS.stderr.log`. Коды завершения и версии находятся
++в одноимённых `*.result.json` и в `return/logs/RUNS.json`.
++
++| Требование | Место реализации | Файл / тест |
++|---|---|---|
++| Точный ABI и семь полей результата | `build_run_evidence`, `RunEvidenceError` | `test_hashes.py`: `test_public_function_signature`, `test_exact_envelope_fields_types_and_flags`; `test_validation.py`: `test_error_is_value_error` |
++| Проверка конфигурации исходным P46, без запуска тестов | `build_run_evidence` | `test_validation.py`: `test_configuration_reuses_recording_validation_and_cause`, `test_constructor_is_used_without_running_tests`, `test_recording_error_keeps_original_exception_identity`, `test_unexpected_constructor_exceptions_are_not_masked` |
++| Границы/типы release/bindings/attempt | `build_run_evidence` → `RecordingResult` | `test_validation.py`: `test_configuration_identifier_boundaries_and_unicode_test_id`, `test_binding_configuration_invalid_shapes_and_limits_keep_cause` |
++| Поля, точные типы, подклассы, схема | `_exact_fields`, `_check_report` | `test_validation.py`: `test_report_exact_type_and_fields`, `test_schema_exact_value_and_type`, `test_record_exact_type_and_fields`, `test_record_identifiers_attempt_and_exact_types` |
++| 10 000 записей, известные уникальные пары | `_check_report` | `test_validation.py`: `test_records_exact_container_and_limit`, `test_records_and_bindings_allow_exactly_ten_thousand`, `test_duplicate_or_unbound_record_pair_rejected` |
++| Точные исходы и согласованные счётчики | `_check_report` | `test_validation.py`: `test_status_triplets_are_exact`, `test_counts_exact_type_fields_values_and_consistency` |
++| UTF-8, размер каждого потока, суррогаты | `_output_bytes` | `test_validation.py`: `test_output_text_exact_type_and_surrogates`, `test_output_byte_limits_independent_per_stream` |
++| Точная команда, длины, запрет C0/DEL/суррогатов | `_command_artifact`, `_command_text` | `test_validation.py`: `test_command_exact_type_and_fields`, `test_argv_exact_container_count_and_members`, `test_command_string_character_limits_and_forbidden_characters`, `test_all_c0_command_controls_rejected` |
++| Ключи P47, зарезервированные имена, регистр | `_artifact_key`, `_test_artifacts` | `test_validation.py`: `test_artifact_keys_invalid_types_paths_and_windows_names`, `test_artifact_key_limits_valid_names_and_cross_kind_collision`, `test_artifact_duplicates_case_insensitive` |
++| TEST: тип bytes, количество, индивидуальный/общий размер | `_test_artifacts` | `test_validation.py`: `test_artifact_list_and_records_exact_types_and_fields`, `test_artifact_content_exact_bytes`, `test_artifact_count_and_empty_artifacts`, `test_artifact_individual_and_total_byte_limits` |
++| Канонические хеши и исключение key команды | `_canonical_sha256`, `_command_artifact` | `test_hashes.py`: `test_command_hash_exact_canonical_bytes_and_key_excluded`, `test_every_command_component_affects_hash`, `test_mapping_insertion_order_does_not_change_hashes` |
++| Исходный порядок records, точные raw bytes, отсутствие нормализации | `_check_report`, `_output_bytes`, `build_run_evidence` | `test_hashes.py`: `test_report_canonical_hash_preserves_record_list_order`, `test_raw_outputs_preserve_unicode_crlf_controls_hash_and_size`, `test_no_unicode_or_line_ending_normalization`, `test_snapshot_sorted_and_test_hashes_use_arbitrary_exact_bytes` |
++| Независимые контейнеры, неизменность входа, attempt без новой политики | `build_run_evidence` | `test_hashes.py`: `test_input_preserved_and_output_containers_detached`, `test_nondefault_attempt_preserved_without_latest_attempt_policy` |
++| Нет собственных I/O, окружения, часов, subprocess и вывода | Весь новый модуль | `test_hashes.py`: `test_import_and_call_have_no_own_io_environment_clock_or_process` |
++| Настоящий отчёт P23/P46 со всеми четырьмя исходами | Вход `report` | `test_integration.py`: `test_real_p23_p46_mixed_four_statuses_execute_exactly_once` |
++| failfast/пустой запуск без выдуманного PASS | `_check_report` | `test_integration.py`: `test_real_failfast_preserves_only_visited_case_without_invented_pass`, `test_real_empty_suite_does_not_become_general_pass`, `test_empty_report_can_have_unvisited_bindings` |
++| Реальный P47: UNKNOWN/MATCH/CHANGED_AFFECTED | `identity_snapshot` | `test_integration.py`: `test_real_p47_equal_partial_identity_is_unknown`, `test_real_p47_full_dimensions_match`, `test_real_p47_changed_command_is_affected`, `test_real_p47_changed_test_bytes_are_affected`, `test_known_changed_identity_takes_priority_over_missing_dimensions` |
++
++Собственные проверки: 29 ValidationTests + 12 HashAndPurityTests +
++9 RealIntegrationTests = 50. Публичных тестов в исходном комплекте — 13.
++
++## Граница доверия и ограничения результата
++
++Снимок описывает только COMMAND и TEST. При одинаковых снимках без остальных
++пяти измерений P47 возвращает UNKNOWN, а не MATCH. Для MATCH тест интеграции
++явно добавляет SOURCE/SCHEMA/CONFIG/DEPENDENCY/RUNTIME и полное описание влияния.
++Известное релевантное изменение команды или теста даёт CHANGED_AFFECTED;
++оно имеет приоритет перед неполнотой других измерений.
++
++Хеш подтверждает только переданные байты. Адаптер не отличает внутренне
++согласованный поддельный report от настоящего и не удостоверяет факт запуска
++описанной команды. Доверенный вызывающий код отвечает за отчёт P23, идентичность
++исходников/среды/зависимостей, полные журналы и их сохранение. Здесь нет агрегатного
++PASS, готовности релиза, выбора последней попытки или разрешения внешних действий.
++Полная продуктовая регрессия и приёмка остаются отдельными этапами.
+diff --git a/return/INTEGRATION_RU.md b/return/INTEGRATION_RU.md
+new file mode 100644
+--- /dev/null
++++ b/return/INTEGRATION_RU.md
+@@ -0,0 +1,50 @@
++# Предложение подключения и восстановления
++
++Статус: **компонент проверен отдельно; рабочая интеграция NOT_CONNECTED**.
++Это предложение для центрального интегратора после приёмки точного возврата,
++а не выполненная установка. Продуктовая регрессия и приёмка Sales First открыты.
++
++## До установки
++
++1. Проверить SHA-256 переданного ZIP, исходного комплекта, защищённых зависимостей
++   и изменённых файлов по манифестам. Повторить три команды README на Python 3.12
++   из корня распакованного пакета; изучить исходные сырые журналы.
++2. Повторно сверить рабочие исходники, актуальный реестр компонентов и разрешённые
++   области изменений. Убедиться, что новый `audit_release/command_evidence.py`
++   отсутствует. Если файл уже существует или зависимости отличаются от закреплённых
++   хешей, остановить установку и согласовать совместимость с владельцами.
++3. Сохранить исходный перечень файлов, их хеши и фактические пути импорта.
++   Изменения общей сборки проводит один интегратор последовательно.
++
++## Последовательное подключение
++
++1. Установить только новый `audit_release/command_evidence.py` и необходимые
++   собственные тесты. Не подменять уже принятые `unittest_evidence.py`,
++   `unittest_runner.py`, `test_applicability.py` файлами из пакета.
++2. Проверить фактический путь импорта `audit_release.command_evidence.__file__`,
++   хеш установленного модуля и точную сигнатуру `build_run_evidence`.
++3. Передавать report только от контролируемого P23, а команду/артефакты — от
++   доверенного вызывающего кода. Новый адаптер не выполняет команду и не является
++   песочницей. Связь переданных байтов с реальным запуском обеспечивает вызывающий.
++4. Проверить цепочку P23 → RecordingResult → build_run_evidence → P47, точные raw
++   stdout/stderr и соответствие хешей. Полные журналы архивирует вызывающий код.
++5. Для полной оценки применимости P47 отдельно обеспечить достоверные
++   SOURCE/SCHEMA/CONFIG/DEPENDENCY/RUNTIME и описание влияния проверок.
++   Только COMMAND/TEST при равенстве дают UNKNOWN. Известное релевантное изменение
++   имеет приоритет и может дать CHANGED_AFFECTED даже при неполном снимке.
++6. Выполнить затронутые проверки рабочей сборки и согласованную общую регрессию.
++   Зафиксировать команды, версии, exit codes и действительные ограничения.
++   Компонентный PASS этого возврата не заменяет продуктовую приёмку.
++
++## Восстановление
++
++1. Остановить дальнейшее подключение и сверить идентичность добавленных файлов
++   с хешами точно установленной версии.
++2. Удалить только добавленный модуль и необходимые добавленные тесты, если их
++   идентичность совпадает. При чужих изменениях не удалять и не переписывать файлы
++   автоматически — согласовать действие с их владельцем.
++3. Сверить исходный перечень/хеши файлов и пути импорта; повторить исходные проверки.
++   Соседние принятые компоненты при этой процедуре не меняются.
++
++БД, миграции, службы, активация обработчиков и внешние отправки в пакет не входят.
++Оба флага `external_effect_authorized` и `gate_acceptance` остаются False.
+diff --git a/return/REPORT_RU.md b/return/REPORT_RU.md
+new file mode 100644
+--- /dev/null
++++ b/return/REPORT_RU.md
+@@ -0,0 +1,67 @@
++# Отчёт о возврате SFA-P46-RUN-EVIDENCE R1
++
++Компонент реализован в `source/audit_release/command_evidence.py` по редакции
++H2-RU-CHECK выданного комплекта. Проверки компонента завершились успешно;
++общая регрессия и приёмка Sales First остаются открытыми.
++
++## Среда и фактические команды
++
++Python: **3.12.14**. Полная строка: `3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]`.
++Рабочий каталог всех трёх запусков: `/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE`.
++Использована только стандартная библиотека. Опция `-B` отключает создание кэша;
++соответствует командам README с явным интерпретатором Python 3.12.
++
++| Проверка | Фактическая команда | Код выхода | Число тестов |
++|---|---|---:|---:|
++| `CHECK_PACKAGE.py` | `/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12 -B CHECK_PACKAGE.py` | 0 | — |
++| `RUN_PUBLIC_TESTS.py` | `/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12 -B RUN_PUBLIC_TESTS.py` | 0 | 13 |
++| `RUN_CANDIDATE_TESTS.py` | `/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12 -B RUN_CANDIDATE_TESTS.py` | 0 | 50 |
++
++Итого функциональных тестов: **63**
++(13 публичных и 50 собственных).
++Штатные программы запуска отклоняют пустой набор, пропуски, ожидаемые неудачи
++и неожиданные успехи. Итоговые коды всех трёх команд равны 0.
++
++В `return/logs/` находятся полные фактические stdout/stderr каждой команды,
++отдельные `*.result.json` с кодами завершения, командами, каталогом, версией и
++SHA-256 журналов; `RUNS.json` объединяет метаданные. Пустой stdout допустим:
++стандартный unittest пишет протокол в stderr. Журналы не пересказывались.
++
++## Исходная база и целостность
++
++Исходный ZIP: `04_Dmitry_SFA_P46_RUN_EVIDENCE.zip`,
++SHA-256 `6f2ba8255620c1cf3af4d8e4de717157be739ec572d688a4dae8453def4709c5`.
++Все 17 защищённых файлов сохранены побайтно; проверен также весь исходный
++комплект, кроме единственного разрешённого изменяемого целевого модуля.
++Принятые P23, P46 RecordingResult и P47 не менялись.
++
++Исходный каркас намеренно завершался `IMPLEMENTATION_REQUIRED`: 13 публичных
++проверок с кодом 1. Собственных тестов было 0, также код 1. Проверка целостности
++исходной базы завершалась кодом 0. Эти исходные прогоны хранятся в репозитории
++отдельно от финальных журналов, в `artifacts/verification/baseline/`.
++
++## Состав и воспроизводимость
++
++Возврат — один ZIP с корнем `04_Dmitry_SFA_P46_RUN_EVIDENCE/`.
++`PATCH.diff` восстанавливает все изменённые/добавленные UTF-8 файлы относительно
++выданного архива, кроме самого `return/PATCH.diff` и `return/OUTPUT_SHA256.json`.
++В том числе он содержит код, тесты, документы и журналы. Эти два служебных файла
++переданы отдельно внутри ZIP; такое исключение устраняет самоссылки.
++
++`OUTPUT_SHA256.json` содержит SHA-256 всех изменённых/добавленных файлов,
++включая патч и сырые журналы, исключая только сам манифест. Защищённые файлы
++проверяются исходным `PROTECTED_SHA256.json` и сравнением с исходным ZIP.
++
++Повторная проверка готового ZIP после распаковки и проверка применения патча
++запускаются утилитой репозитория `tools/verify_return.py`. Их внешние журналы
++сохраняются в `artifacts/verification/round2/`, а сводка — рядом с ZIP в
++`*.validation.json`. Они не дописываются в уже собранный архив.
++
++## Фактическая граница результата
++
++Проверены компонентный контракт и реальные включённые зависимости P23/P46/P47.
++Продуктовая сборка, рабочая установка, служебная активация, БД и реальные отправки
++не выполнялись. `external_effect_authorized` и `gate_acceptance` всегда False.
++Хеши связывают переданные байты, не доказывают выполнение описанной команды,
++подлинность отчёта, происхождение исходников или готовность продукта.
++Источники отчёта, артефактов и остальных пяти измерений P47 контролирует интегратор.
+diff --git a/return/logs/01_CHECK_PACKAGE.result.json b/return/logs/01_CHECK_PACKAGE.result.json
+new file mode 100644
+--- /dev/null
++++ b/return/logs/01_CHECK_PACKAGE.result.json
+@@ -0,0 +1,19 @@
++{
++  "script": "CHECK_PACKAGE.py",
++  "command": [
++    "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
++    "-B",
++    "CHECK_PACKAGE.py"
++  ],
++  "cwd": "/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE",
++  "python_version": "3.12.14",
++  "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
++  "started_at_utc": "2026-10-21T18:24:37.906743+00:00",
++  "finished_at_utc": "2026-10-21T18:24:37.940769+00:00",
++  "exit_code": 0,
++  "tests_run": null,
++  "stdout_file": "01_CHECK_PACKAGE.stdout.log",
++  "stderr_file": "01_CHECK_PACKAGE.stderr.log",
++  "stdout_sha256": "97dfd7f2115511f64b6424905a7b1f5e7dce1426c242ab173798d2d5c8c31602",
++  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
++}
+diff --git a/return/logs/01_CHECK_PACKAGE.stderr.log b/return/logs/01_CHECK_PACKAGE.stderr.log
+new file mode 100644
+diff --git a/return/logs/01_CHECK_PACKAGE.stdout.log b/return/logs/01_CHECK_PACKAGE.stdout.log
+new file mode 100644
+--- /dev/null
++++ b/return/logs/01_CHECK_PACKAGE.stdout.log
+@@ -0,0 +1 @@
++{"protected_files": 17, "mismatch": []}
+diff --git a/return/logs/02_RUN_PUBLIC_TESTS.result.json b/return/logs/02_RUN_PUBLIC_TESTS.result.json
+new file mode 100644
+--- /dev/null
++++ b/return/logs/02_RUN_PUBLIC_TESTS.result.json
+@@ -0,0 +1,19 @@
++{
++  "script": "RUN_PUBLIC_TESTS.py",
++  "command": [
++    "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
++    "-B",
++    "RUN_PUBLIC_TESTS.py"
++  ],
++  "cwd": "/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE",
++  "python_version": "3.12.14",
++  "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
++  "started_at_utc": "2026-10-21T18:24:37.940901+00:00",
++  "finished_at_utc": "2026-10-21T18:24:37.995138+00:00",
++  "exit_code": 0,
++  "tests_run": 13,
++  "stdout_file": "02_RUN_PUBLIC_TESTS.stdout.log",
++  "stderr_file": "02_RUN_PUBLIC_TESTS.stderr.log",
++  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++  "stderr_sha256": "c28eb5ae85a9f2eb8728b73665f0f2e2aa0c8f033c9f699cdf12fec701d4d8ce"
++}
+diff --git a/return/logs/02_RUN_PUBLIC_TESTS.stderr.log b/return/logs/02_RUN_PUBLIC_TESTS.stderr.log
+new file mode 100644
+--- /dev/null
++++ b/return/logs/02_RUN_PUBLIC_TESTS.stderr.log
+@@ -0,0 +1,18 @@
++test_actual_runner_report (test_public.EvidencePublic.test_actual_runner_report) ... ok
++test_bool_exit_and_attempt (test_public.EvidencePublic.test_bool_exit_and_attempt) ... ok
++test_count_mismatch (test_public.EvidencePublic.test_count_mismatch) ... ok
++test_detached_outputs_and_input_preserved (test_public.EvidencePublic.test_detached_outputs_and_input_preserved) ... ok
++test_empty_and_unvisited (test_public.EvidencePublic.test_empty_and_unvisited) ... ok
++test_exact_fields (test_public.EvidencePublic.test_exact_fields) ... ok
++test_exact_output_and_hashes (test_public.EvidencePublic.test_exact_output_and_hashes) ... ok
++test_four_statuses (test_public.EvidencePublic.test_four_statuses) ... ok
++test_invalid_path_and_case_collision (test_public.EvidencePublic.test_invalid_path_and_case_collision) ... ok
++test_real_p47_consumer_missing_dimensions_unknown (test_public.EvidencePublic.test_real_p47_consumer_missing_dimensions_unknown) ... ok
++test_real_p47_full_dimensions_and_change (test_public.EvidencePublic.test_real_p47_full_dimensions_and_change) ... ok
++test_unicode_surrogates_rejected (test_public.EvidencePublic.test_unicode_surrogates_rejected) ... ok
++test_unknown_or_duplicate_case (test_public.EvidencePublic.test_unknown_or_duplicate_case) ... ok
++
++----------------------------------------------------------------------
++Ran 13 tests in 0.002s
++
++OK
+diff --git a/return/logs/02_RUN_PUBLIC_TESTS.stdout.log b/return/logs/02_RUN_PUBLIC_TESTS.stdout.log
+new file mode 100644
+diff --git a/return/logs/03_RUN_CANDIDATE_TESTS.result.json b/return/logs/03_RUN_CANDIDATE_TESTS.result.json
+new file mode 100644
+--- /dev/null
++++ b/return/logs/03_RUN_CANDIDATE_TESTS.result.json
+@@ -0,0 +1,19 @@
++{
++  "script": "RUN_CANDIDATE_TESTS.py",
++  "command": [
++    "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
++    "-B",
++    "RUN_CANDIDATE_TESTS.py"
++  ],
++  "cwd": "/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE",
++  "python_version": "3.12.14",
++  "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
++  "started_at_utc": "2026-10-21T18:24:37.995245+00:00",
++  "finished_at_utc": "2026-10-21T18:24:38.238544+00:00",
++  "exit_code": 0,
++  "tests_run": 50,
++  "stdout_file": "03_RUN_CANDIDATE_TESTS.stdout.log",
++  "stderr_file": "03_RUN_CANDIDATE_TESTS.stderr.log",
++  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++  "stderr_sha256": "4808943242b8b28666cee0aa7d22afcba4ead0a2b0a31ab1e88a536ffbe3539b"
++}
+diff --git a/return/logs/03_RUN_CANDIDATE_TESTS.stderr.log b/return/logs/03_RUN_CANDIDATE_TESTS.stderr.log
+new file mode 100644
+--- /dev/null
++++ b/return/logs/03_RUN_CANDIDATE_TESTS.stderr.log
+@@ -0,0 +1,55 @@
++test_command_hash_exact_canonical_bytes_and_key_excluded (test_hashes.HashAndPurityTests.test_command_hash_exact_canonical_bytes_and_key_excluded) ... ok
++test_every_command_component_affects_hash (test_hashes.HashAndPurityTests.test_every_command_component_affects_hash) ... ok
++test_exact_envelope_fields_types_and_flags (test_hashes.HashAndPurityTests.test_exact_envelope_fields_types_and_flags) ... ok
++test_import_and_call_have_no_own_io_environment_clock_or_process (test_hashes.HashAndPurityTests.test_import_and_call_have_no_own_io_environment_clock_or_process) ... ok
++test_input_preserved_and_output_containers_detached (test_hashes.HashAndPurityTests.test_input_preserved_and_output_containers_detached) ... ok
++test_mapping_insertion_order_does_not_change_hashes (test_hashes.HashAndPurityTests.test_mapping_insertion_order_does_not_change_hashes) ... ok
++test_no_unicode_or_line_ending_normalization (test_hashes.HashAndPurityTests.test_no_unicode_or_line_ending_normalization) ... ok
++test_nondefault_attempt_preserved_without_latest_attempt_policy (test_hashes.HashAndPurityTests.test_nondefault_attempt_preserved_without_latest_attempt_policy) ... ok
++test_public_function_signature (test_hashes.HashAndPurityTests.test_public_function_signature) ... ok
++test_raw_outputs_preserve_unicode_crlf_controls_hash_and_size (test_hashes.HashAndPurityTests.test_raw_outputs_preserve_unicode_crlf_controls_hash_and_size) ... ok
++test_report_canonical_hash_preserves_record_list_order (test_hashes.HashAndPurityTests.test_report_canonical_hash_preserves_record_list_order) ... ok
++test_snapshot_sorted_and_test_hashes_use_arbitrary_exact_bytes (test_hashes.HashAndPurityTests.test_snapshot_sorted_and_test_hashes_use_arbitrary_exact_bytes) ... ok
++test_empty_report_can_have_unvisited_bindings (test_integration.RealIntegrationTests.test_empty_report_can_have_unvisited_bindings) ... ok
++test_known_changed_identity_takes_priority_over_missing_dimensions (test_integration.RealIntegrationTests.test_known_changed_identity_takes_priority_over_missing_dimensions) ... ok
++test_real_empty_suite_does_not_become_general_pass (test_integration.RealIntegrationTests.test_real_empty_suite_does_not_become_general_pass) ... ok
++test_real_failfast_preserves_only_visited_case_without_invented_pass (test_integration.RealIntegrationTests.test_real_failfast_preserves_only_visited_case_without_invented_pass) ... ok
++test_real_p23_p46_mixed_four_statuses_execute_exactly_once (test_integration.RealIntegrationTests.test_real_p23_p46_mixed_four_statuses_execute_exactly_once) ... ok
++test_real_p47_changed_command_is_affected (test_integration.RealIntegrationTests.test_real_p47_changed_command_is_affected) ... ok
++test_real_p47_changed_test_bytes_are_affected (test_integration.RealIntegrationTests.test_real_p47_changed_test_bytes_are_affected) ... ok
++test_real_p47_equal_partial_identity_is_unknown (test_integration.RealIntegrationTests.test_real_p47_equal_partial_identity_is_unknown) ... ok
++test_real_p47_full_dimensions_match (test_integration.RealIntegrationTests.test_real_p47_full_dimensions_match) ... ok
++test_all_c0_command_controls_rejected (test_validation.ValidationTests.test_all_c0_command_controls_rejected) ... ok
++test_argv_exact_container_count_and_members (test_validation.ValidationTests.test_argv_exact_container_count_and_members) ... ok
++test_artifact_content_exact_bytes (test_validation.ValidationTests.test_artifact_content_exact_bytes) ... ok
++test_artifact_count_and_empty_artifacts (test_validation.ValidationTests.test_artifact_count_and_empty_artifacts) ... ok
++test_artifact_duplicates_case_insensitive (test_validation.ValidationTests.test_artifact_duplicates_case_insensitive) ... ok
++test_artifact_individual_and_total_byte_limits (test_validation.ValidationTests.test_artifact_individual_and_total_byte_limits) ... ok
++test_artifact_key_limits_valid_names_and_cross_kind_collision (test_validation.ValidationTests.test_artifact_key_limits_valid_names_and_cross_kind_collision) ... ok
++test_artifact_keys_invalid_types_paths_and_windows_names (test_validation.ValidationTests.test_artifact_keys_invalid_types_paths_and_windows_names) ... ok
++test_artifact_list_and_records_exact_types_and_fields (test_validation.ValidationTests.test_artifact_list_and_records_exact_types_and_fields) ... ok
++test_binding_configuration_invalid_shapes_and_limits_keep_cause (test_validation.ValidationTests.test_binding_configuration_invalid_shapes_and_limits_keep_cause) ... ok
++test_command_exact_type_and_fields (test_validation.ValidationTests.test_command_exact_type_and_fields) ... ok
++test_command_string_character_limits_and_forbidden_characters (test_validation.ValidationTests.test_command_string_character_limits_and_forbidden_characters) ... ok
++test_configuration_identifier_boundaries_and_unicode_test_id (test_validation.ValidationTests.test_configuration_identifier_boundaries_and_unicode_test_id) ... ok
++test_configuration_reuses_recording_validation_and_cause (test_validation.ValidationTests.test_configuration_reuses_recording_validation_and_cause) ... ok
++test_constructor_is_used_without_running_tests (test_validation.ValidationTests.test_constructor_is_used_without_running_tests) ... ok
++test_counts_exact_type_fields_values_and_consistency (test_validation.ValidationTests.test_counts_exact_type_fields_values_and_consistency) ... ok
++test_duplicate_or_unbound_record_pair_rejected (test_validation.ValidationTests.test_duplicate_or_unbound_record_pair_rejected) ... ok
++test_error_is_value_error (test_validation.ValidationTests.test_error_is_value_error) ... ok
++test_output_byte_limits_independent_per_stream (test_validation.ValidationTests.test_output_byte_limits_independent_per_stream) ... ok
++test_output_text_exact_type_and_surrogates (test_validation.ValidationTests.test_output_text_exact_type_and_surrogates) ... ok
++test_record_exact_type_and_fields (test_validation.ValidationTests.test_record_exact_type_and_fields) ... ok
++test_record_identifiers_attempt_and_exact_types (test_validation.ValidationTests.test_record_identifiers_attempt_and_exact_types) ... ok
++test_recording_error_keeps_original_exception_identity (test_validation.ValidationTests.test_recording_error_keeps_original_exception_identity) ... ok
++test_records_and_bindings_allow_exactly_ten_thousand (test_validation.ValidationTests.test_records_and_bindings_allow_exactly_ten_thousand) ... ok
++test_records_exact_container_and_limit (test_validation.ValidationTests.test_records_exact_container_and_limit) ... ok
++test_report_exact_type_and_fields (test_validation.ValidationTests.test_report_exact_type_and_fields) ... ok
++test_schema_exact_value_and_type (test_validation.ValidationTests.test_schema_exact_value_and_type) ... ok
++test_status_triplets_are_exact (test_validation.ValidationTests.test_status_triplets_are_exact) ... ok
++test_unexpected_constructor_exceptions_are_not_masked (test_validation.ValidationTests.test_unexpected_constructor_exceptions_are_not_masked) ... ok
++
++----------------------------------------------------------------------
++Ran 50 tests in 0.155s
++
++OK
+diff --git a/return/logs/03_RUN_CANDIDATE_TESTS.stdout.log b/return/logs/03_RUN_CANDIDATE_TESTS.stdout.log
+new file mode 100644
+diff --git a/return/logs/RUNS.json b/return/logs/RUNS.json
+new file mode 100644
+--- /dev/null
++++ b/return/logs/RUNS.json
+@@ -0,0 +1,61 @@
++{
++  "runs": [
++    {
++      "script": "CHECK_PACKAGE.py",
++      "command": [
++        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
++        "-B",
++        "CHECK_PACKAGE.py"
++      ],
++      "cwd": "/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE",
++      "python_version": "3.12.14",
++      "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
++      "started_at_utc": "2026-10-21T18:24:37.906743+00:00",
++      "finished_at_utc": "2026-10-21T18:24:37.940769+00:00",
++      "exit_code": 0,
++      "tests_run": null,
++      "stdout_file": "01_CHECK_PACKAGE.stdout.log",
++      "stderr_file": "01_CHECK_PACKAGE.stderr.log",
++      "stdout_sha256": "97dfd7f2115511f64b6424905a7b1f5e7dce1426c242ab173798d2d5c8c31602",
++      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
++    },
++    {
++      "script": "RUN_PUBLIC_TESTS.py",
++      "command": [
++        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
++        "-B",
++        "RUN_PUBLIC_TESTS.py"
++      ],
++      "cwd": "/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE",
++      "python_version": "3.12.14",
++      "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
++      "started_at_utc": "2026-10-21T18:24:37.940901+00:00",
++      "finished_at_utc": "2026-10-21T18:24:37.995138+00:00",
++      "exit_code": 0,
++      "tests_run": 13,
++      "stdout_file": "02_RUN_PUBLIC_TESTS.stdout.log",
++      "stderr_file": "02_RUN_PUBLIC_TESTS.stderr.log",
++      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++      "stderr_sha256": "c28eb5ae85a9f2eb8728b73665f0f2e2aa0c8f033c9f699cdf12fec701d4d8ce"
++    },
++    {
++      "script": "RUN_CANDIDATE_TESTS.py",
++      "command": [
++        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
++        "-B",
++        "RUN_CANDIDATE_TESTS.py"
++      ],
++      "cwd": "/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE",
++      "python_version": "3.12.14",
++      "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
++      "started_at_utc": "2026-10-21T18:24:37.995245+00:00",
++      "finished_at_utc": "2026-10-21T18:24:38.238544+00:00",
++      "exit_code": 0,
++      "tests_run": 50,
++      "stdout_file": "03_RUN_CANDIDATE_TESTS.stdout.log",
++      "stderr_file": "03_RUN_CANDIDATE_TESTS.stderr.log",
++      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++      "stderr_sha256": "4808943242b8b28666cee0aa7d22afcba4ead0a2b0a31ab1e88a536ffbe3539b"
++    }
++  ]
++}
+diff --git a/source/audit_release/command_evidence.py b/source/audit_release/command_evidence.py
+--- a/source/audit_release/command_evidence.py
++++ b/source/audit_release/command_evidence.py
+@@ -1,7 +1,213 @@
+-"""Реализовать build_run_evidence по CONTRACT_RU.md."""
++"""Связать переданный отчёт P23 с байтами COMMAND/TEST без выполнения и I/O.
++
++Хеши описывают полученные данные. Происхождение отчёта и доверие к запуску
++обеспечивает внешний вызывающий код, а применимость снимка оценивает P47.
++"""
++
++import hashlib
++import json
++import re
++
++from audit_release.unittest_evidence import RecordingError, RecordingResult
++
++
++_REPORT_FIELDS = frozenset(("schema_version", "records", "counts", "stdout", "stderr"))
++_RECORD_FIELDS = (
++    "release_id", "suite_id", "case_id", "attempt", "status", "exit_code", "skip_count",
++)
++_RECORD_FIELD_SET = frozenset(_RECORD_FIELDS)
++_COUNT_FIELDS = frozenset(("tests_run", "failures", "errors", "skips"))
++_COMMAND_FIELDS = frozenset(("key", "argv", "cwd", "interpreter"))
++_TEST_FIELDS = frozenset(("key", "content"))
++_OUTCOMES = {"PASS": (0, 0), "FAIL": (1, 0), "ERROR": (1, 0), "SKIP": (0, 1)}
++_KEY_SEGMENT = re.compile(r"[A-Za-z0-9_.-]+")
++_RESERVED = frozenset(
++    ("CON", "PRN", "AUX", "NUL")
++    + tuple("COM%d" % number for number in range(1, 10))
++    + tuple("LPT%d" % number for number in range(1, 10))
++)
++_MAX_BYTES = 4_194_304
++
++
+ class RunEvidenceError(ValueError):
++    """Ошибка входа с публичным кодом, без содержимого входных данных."""
++
+     def __init__(self, code):
+-        self.code=code
++        self.code = code
+         super().__init__(code)
++
++
++def _invalid():
++    raise RunEvidenceError("INVALID_INPUT")
++
++
++def _exact_fields(value, fields):
++    # Проверяем тип ключа до сравнения: подклассы и чужие __eq__ не нужны.
++    if type(value) is not dict or len(value) != len(fields):
++        _invalid()
++    for key in value:
++        if type(key) is not str or key not in fields:
++            _invalid()
++
++
++def _sha256(content):
++    return hashlib.sha256(content).hexdigest()
++
++
++def _canonical_sha256(value):
++    raw = json.dumps(
++        value, ensure_ascii=False, sort_keys=True,
++        separators=(",", ":"), allow_nan=False,
++    ).encode("utf-8")
++    return _sha256(raw)
++
++
++def _output_bytes(value):
++    if type(value) is not str:
++        _invalid()
++    try:
++        raw = value.encode("utf-8")
++    except UnicodeEncodeError:
++        raise RunEvidenceError("INVALID_INPUT") from None
++    if len(raw) > _MAX_BYTES:
++        _invalid()
++    return raw
++
++
++def _check_report(report, release_id, bindings, attempt):
++    _exact_fields(report, _REPORT_FIELDS)
++    version = report["schema_version"]
++    if type(version) is not str or version != "FIRST_OFFLINE_UNITTEST_RUN_V1":
++        _invalid()
++    records = report["records"]
++    if type(records) is not list or len(records) > 10_000:
++        _invalid()
++    counts = report["counts"]
++    _exact_fields(counts, _COUNT_FIELDS)
++    if any(type(value) is not int or value < 0 for value in counts.values()):
++        _invalid()
++
++    allowed = {(item["suite_id"], item["case_id"]) for item in bindings}
++    seen = set()
++    actual = {"tests_run": len(records), "failures": 0, "errors": 0, "skips": 0}
++    count_names = {"FAIL": "failures", "ERROR": "errors", "SKIP": "skips"}
++    copied = []
++    for record in records:
++        _exact_fields(record, _RECORD_FIELD_SET)
++        if (
++            type(record["release_id"]) is not str
++            or record["release_id"] != release_id
++            or type(record["attempt"]) is not int
++            or record["attempt"] != attempt
++            or type(record["suite_id"]) is not str
++            or type(record["case_id"]) is not str
++        ):
++            _invalid()
++        pair = (record["suite_id"], record["case_id"])
++        if pair not in allowed or pair in seen:
++            _invalid()
++        seen.add(pair)
++        status = record["status"]
++        if (
++            type(status) is not str or status not in _OUTCOMES
++            or type(record["exit_code"]) is not int
++            or type(record["skip_count"]) is not int
++            or (record["exit_code"], record["skip_count"]) != _OUTCOMES[status]
++        ):
++            _invalid()
++        if status in count_names:
++            actual[count_names[status]] += 1
++        # Порядок входного списка сохраняется, отсутствующие случаи не добавляем.
++        copied.append({field: record[field] for field in _RECORD_FIELDS})
++    if counts != actual:
++        _invalid()
++    return copied, {
++        name: _output_bytes(report[name]) for name in ("stdout", "stderr")
++    }
++
++
++def _artifact_key(value):
++    if type(value) is not str or not 1 <= len(value) <= 2048 or not value.isascii():
++        _invalid()
++    for segment in value.split("/"):
++        if (
++            _KEY_SEGMENT.fullmatch(segment) is None
++            or segment in (".", "..") or segment.endswith(".")
++            or segment.split(".", 1)[0].upper() in _RESERVED
++        ):
++            _invalid()
++    return value.lower()
++
++
++def _command_text(value):
++    if (
++        type(value) is not str or not 1 <= len(value) <= 4096
++        or any(
++            ord(char) < 32 or ord(char) == 127 or 0xD800 <= ord(char) <= 0xDFFF
++            for char in value
++        )
++    ):
++        _invalid()
++
++
++def _command_artifact(command):
++    _exact_fields(command, _COMMAND_FIELDS)
++    key = _artifact_key(command["key"])
++    argv = command["argv"]
++    if type(argv) is not list or not 1 <= len(argv) <= 256:
++        _invalid()
++    for value in argv:
++        _command_text(value)
++    _command_text(command["cwd"])
++    _command_text(command["interpreter"])
++    # key — адрес артефакта, а хеш относится только к описанию команды.
++    description = {name: command[name] for name in ("argv", "cwd", "interpreter")}
++    return {"kind": "COMMAND", "key": key, "sha256": _canonical_sha256(description)}
++
++
++def _test_artifacts(test_artifacts):
++    if type(test_artifacts) is not list or len(test_artifacts) > 256:
++        _invalid()
++    seen = set()
++    total = 0
++    result = []
++    for artifact in test_artifacts:
++        _exact_fields(artifact, _TEST_FIELDS)
++        key = _artifact_key(artifact["key"])
++        content = artifact["content"]
++        if key in seen or type(content) is not bytes or len(content) > _MAX_BYTES:
++            _invalid()
++        seen.add(key)
++        total += len(content)
++        if total > 8_388_608:
++            _invalid()
++        result.append({"kind": "TEST", "key": key, "sha256": _sha256(content)})
++    return result
++
++
+ def build_run_evidence(report, *, release_id, bindings, attempt=1, command, test_artifacts):
+-    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
++    """Проверить данные и построить FIRST_RUN_EVIDENCE_ENVELOPE_V1."""
++    # Правила конфигурации принадлежат принятому P46. Тесты здесь не запускаются.
++    try:
++        RecordingResult(release_id=release_id, bindings=bindings, attempt=attempt)
++    except RecordingError as error:
++        raise RunEvidenceError("INVALID_INPUT") from error
++
++    records, outputs = _check_report(report, release_id, bindings, attempt)
++    artifacts = [_command_artifact(command)] + _test_artifacts(test_artifacts)
++    artifacts.sort(key=lambda artifact: (artifact["kind"], artifact["key"]))
++    return {
++        "schema_version": "FIRST_RUN_EVIDENCE_ENVELOPE_V1",
++        "records": records,
++        "report_sha256": _canonical_sha256(report),
++        "identity_snapshot": {
++            "schema_version": "FIRST_TEST_IDENTITY_SNAPSHOT_V1",
++            "artifacts": artifacts,
++        },
++        "raw_outputs": {
++            name: {"content": raw, "sha256": _sha256(raw), "size_bytes": len(raw)}
++            for name, raw in outputs.items()
++        },
++        "external_effect_authorized": False,
++        "gate_acceptance": False,
++    }

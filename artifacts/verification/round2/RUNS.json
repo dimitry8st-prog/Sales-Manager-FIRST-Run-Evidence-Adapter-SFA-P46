@@ -1,0 +1,61 @@
+{
+  "runs": [
+    {
+      "script": "CHECK_PACKAGE.py",
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+        "-B",
+        "CHECK_PACKAGE.py"
+      ],
+      "cwd": "/tmp/p46-run-return-check-p4s889gq/submitted/04_Dmitry_SFA_P46_RUN_EVIDENCE",
+      "python_version": "3.12.14",
+      "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+      "started_at_utc": "2026-10-21T18:24:42.861936+00:00",
+      "finished_at_utc": "2026-10-21T18:24:42.888910+00:00",
+      "exit_code": 0,
+      "tests_run": null,
+      "stdout_file": "01_CHECK_PACKAGE.stdout.log",
+      "stderr_file": "01_CHECK_PACKAGE.stderr.log",
+      "stdout_sha256": "97dfd7f2115511f64b6424905a7b1f5e7dce1426c242ab173798d2d5c8c31602",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "script": "RUN_PUBLIC_TESTS.py",
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+        "-B",
+        "RUN_PUBLIC_TESTS.py"
+      ],
+      "cwd": "/tmp/p46-run-return-check-p4s889gq/submitted/04_Dmitry_SFA_P46_RUN_EVIDENCE",
+      "python_version": "3.12.14",
+      "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+      "started_at_utc": "2026-10-21T18:24:42.889145+00:00",
+      "finished_at_utc": "2026-10-21T18:24:42.943870+00:00",
+      "exit_code": 0,
+      "tests_run": 13,
+      "stdout_file": "02_RUN_PUBLIC_TESTS.stdout.log",
+      "stderr_file": "02_RUN_PUBLIC_TESTS.stderr.log",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "c28eb5ae85a9f2eb8728b73665f0f2e2aa0c8f033c9f699cdf12fec701d4d8ce"
+    },
+    {
+      "script": "RUN_CANDIDATE_TESTS.py",
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+        "-B",
+        "RUN_CANDIDATE_TESTS.py"
+      ],
+      "cwd": "/tmp/p46-run-return-check-p4s889gq/submitted/04_Dmitry_SFA_P46_RUN_EVIDENCE",
+      "python_version": "3.12.14",
+      "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+      "started_at_utc": "2026-10-21T18:24:42.943981+00:00",
+      "finished_at_utc": "2026-10-21T18:24:43.185604+00:00",
+      "exit_code": 0,
+      "tests_run": 50,
+      "stdout_file": "03_RUN_CANDIDATE_TESTS.stdout.log",
+      "stderr_file": "03_RUN_CANDIDATE_TESTS.stderr.log",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3cbe20c4712e01f9f219480d7107f73065cf70ac75b688a61a0848d13686b98"
+    }
+  ]
+}

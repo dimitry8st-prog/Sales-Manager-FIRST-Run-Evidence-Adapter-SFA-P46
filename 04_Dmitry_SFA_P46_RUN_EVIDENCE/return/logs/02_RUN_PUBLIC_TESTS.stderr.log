@@ -1,0 +1,18 @@
+test_actual_runner_report (test_public.EvidencePublic.test_actual_runner_report) ... ok
+test_bool_exit_and_attempt (test_public.EvidencePublic.test_bool_exit_and_attempt) ... ok
+test_count_mismatch (test_public.EvidencePublic.test_count_mismatch) ... ok
+test_detached_outputs_and_input_preserved (test_public.EvidencePublic.test_detached_outputs_and_input_preserved) ... ok
+test_empty_and_unvisited (test_public.EvidencePublic.test_empty_and_unvisited) ... ok
+test_exact_fields (test_public.EvidencePublic.test_exact_fields) ... ok
+test_exact_output_and_hashes (test_public.EvidencePublic.test_exact_output_and_hashes) ... ok
+test_four_statuses (test_public.EvidencePublic.test_four_statuses) ... ok
+test_invalid_path_and_case_collision (test_public.EvidencePublic.test_invalid_path_and_case_collision) ... ok
+test_real_p47_consumer_missing_dimensions_unknown (test_public.EvidencePublic.test_real_p47_consumer_missing_dimensions_unknown) ... ok
+test_real_p47_full_dimensions_and_change (test_public.EvidencePublic.test_real_p47_full_dimensions_and_change) ... ok
+test_unicode_surrogates_rejected (test_public.EvidencePublic.test_unicode_surrogates_rejected) ... ok
+test_unknown_or_duplicate_case (test_public.EvidencePublic.test_unknown_or_duplicate_case) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.002s
+
+OK

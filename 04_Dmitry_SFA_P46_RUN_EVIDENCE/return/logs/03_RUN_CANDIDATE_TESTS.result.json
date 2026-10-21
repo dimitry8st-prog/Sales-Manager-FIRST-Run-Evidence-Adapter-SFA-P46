@@ -1,0 +1,19 @@
+{
+  "script": "RUN_CANDIDATE_TESTS.py",
+  "command": [
+    "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+    "-B",
+    "RUN_CANDIDATE_TESTS.py"
+  ],
+  "cwd": "/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE",
+  "python_version": "3.12.14",
+  "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "started_at_utc": "2026-10-21T18:24:37.995245+00:00",
+  "finished_at_utc": "2026-10-21T18:24:38.238544+00:00",
+  "exit_code": 0,
+  "tests_run": 50,
+  "stdout_file": "03_RUN_CANDIDATE_TESTS.stdout.log",
+  "stderr_file": "03_RUN_CANDIDATE_TESTS.stderr.log",
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "4808943242b8b28666cee0aa7d22afcba4ead0a2b0a31ab1e88a536ffbe3539b"
+}

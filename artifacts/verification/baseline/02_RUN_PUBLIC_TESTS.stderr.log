@@ -1,0 +1,164 @@
+test_actual_runner_report (test_public.EvidencePublic.test_actual_runner_report) ... ERROR
+test_bool_exit_and_attempt (test_public.EvidencePublic.test_bool_exit_and_attempt) ... ERROR
+test_count_mismatch (test_public.EvidencePublic.test_count_mismatch) ... ERROR
+test_detached_outputs_and_input_preserved (test_public.EvidencePublic.test_detached_outputs_and_input_preserved) ... ERROR
+test_empty_and_unvisited (test_public.EvidencePublic.test_empty_and_unvisited) ... ERROR
+test_exact_fields (test_public.EvidencePublic.test_exact_fields) ... ERROR
+test_exact_output_and_hashes (test_public.EvidencePublic.test_exact_output_and_hashes) ... ERROR
+test_four_statuses (test_public.EvidencePublic.test_four_statuses) ... ERROR
+test_invalid_path_and_case_collision (test_public.EvidencePublic.test_invalid_path_and_case_collision) ... ERROR
+test_real_p47_consumer_missing_dimensions_unknown (test_public.EvidencePublic.test_real_p47_consumer_missing_dimensions_unknown) ... ERROR
+test_real_p47_full_dimensions_and_change (test_public.EvidencePublic.test_real_p47_full_dimensions_and_change) ... ERROR
+test_unicode_surrogates_rejected (test_public.EvidencePublic.test_unicode_surrogates_rejected) ... ERROR
+test_unknown_or_duplicate_case (test_public.EvidencePublic.test_unknown_or_duplicate_case) ... ERROR
+
+======================================================================
+ERROR: test_actual_runner_report (test_public.EvidencePublic.test_actual_runner_report)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 41, in test_actual_runner_report
+    self.assertEqual(build_run_evidence(r,**k)['raw_outputs']['stdout']['content'],b'actual\n')
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_bool_exit_and_attempt (test_public.EvidencePublic.test_bool_exit_and_attempt)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 52, in test_bool_exit_and_attempt
+    with self.assertRaises(RunEvidenceError):build_run_evidence(r,**k)
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_count_mismatch (test_public.EvidencePublic.test_count_mismatch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 48, in test_count_mismatch
+    with self.assertRaises(RunEvidenceError):build_run_evidence(r,**k)
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_detached_outputs_and_input_preserved (test_public.EvidencePublic.test_detached_outputs_and_input_preserved)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 72, in test_detached_outputs_and_input_preserved
+    r,k=self.inputs();before=copy.deepcopy((r,k));o=build_run_evidence(r,**k);o['records'][0]['status']='X';o['identity_snapshot']['artifacts'].clear()
+                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_empty_and_unvisited (test_public.EvidencePublic.test_empty_and_unvisited)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 70, in test_empty_and_unvisited
+    o=build_run_evidence(r,**k);self.assertEqual(o['records'],[]);self.assertNotIn('PASS',o)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_exact_fields (test_public.EvidencePublic.test_exact_fields)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 76, in test_exact_fields
+    with self.assertRaises(RunEvidenceError) as c:build_run_evidence(r,**k)
+                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_exact_output_and_hashes (test_public.EvidencePublic.test_exact_output_and_hashes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 16, in test_exact_output_and_hashes
+    r,k=self.inputs();o=build_run_evidence(r,**k)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_four_statuses (test_public.EvidencePublic.test_four_statuses)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 45, in test_four_statuses
+    self.assertEqual(build_run_evidence(r,**k)['records'][0]['status'],s)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_invalid_path_and_case_collision (test_public.EvidencePublic.test_invalid_path_and_case_collision)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 62, in test_invalid_path_and_case_collision
+    with self.assertRaises(RunEvidenceError):build_run_evidence(r,**k)
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_real_p47_consumer_missing_dimensions_unknown (test_public.EvidencePublic.test_real_p47_consumer_missing_dimensions_unknown)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 25, in test_real_p47_consumer_missing_dimensions_unknown
+    o=self.call();pins=[{'kind':x['kind'],'key':x['key']} for x in o['identity_snapshot']['artifacts']]
+      ^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 14, in call
+    r,k=self.inputs();return build_run_evidence(r,**k)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_real_p47_full_dimensions_and_change (test_public.EvidencePublic.test_real_p47_full_dimensions_and_change)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 30, in test_real_p47_full_dimensions_and_change
+    r,k=self.inputs();a=build_run_evidence(r,**k)['identity_snapshot'];k['command']['argv'][-1]='OTHER.py';b=build_run_evidence(r,**k)['identity_snapshot']
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_unicode_surrogates_rejected (test_public.EvidencePublic.test_unicode_surrogates_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 67, in test_unicode_surrogates_rejected
+    with self.assertRaises(RunEvidenceError):build_run_evidence(r,**k)
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+======================================================================
+ERROR: test_unknown_or_duplicate_case (test_public.EvidencePublic.test_unknown_or_duplicate_case)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/public/test_public.py", line 58, in test_unknown_or_duplicate_case
+    with self.assertRaises(RunEvidenceError):build_run_evidence(r,**k)
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/8febe5931947/p46-run-plan/04_Dmitry_SFA_P46_RUN_EVIDENCE/source/audit_release/command_evidence.py", line 7, in build_run_evidence
+    raise NotImplementedError('IMPLEMENTATION_REQUIRED')
+NotImplementedError: IMPLEMENTATION_REQUIRED
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.002s
+
+FAILED (errors=13)

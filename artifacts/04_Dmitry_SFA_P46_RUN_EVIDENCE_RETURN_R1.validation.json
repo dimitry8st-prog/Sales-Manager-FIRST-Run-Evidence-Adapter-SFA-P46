@@ -1,0 +1,29 @@
+{
+  "status": "PASS",
+  "checked_at_utc": "2026-10-21T18:24:43.187752+00:00",
+  "zip": "/workspace/scratch/8febe5931947/run-evidence-github/repo/artifacts/04_Dmitry_SFA_P46_RUN_EVIDENCE_RETURN_R1.zip",
+  "zip_sha256": "3a6fa3a42ed384f830dcac447383e479a772a28c9a5c86e266abef3802e02c69",
+  "zip_size_bytes": 85642,
+  "files": 38,
+  "original_files": 20,
+  "protected_files": 17,
+  "manifest_entries": 18,
+  "crc_and_paths": "PASS",
+  "original_and_protected_bytes": "PASS",
+  "output_manifest_exact": "PASS",
+  "raw_log_hashes": "PASS",
+  "patch_check_and_replay": "PASS",
+  "zip_equals_worktree": "PASS",
+  "clean_extracted_gate_exit_codes": [
+    0,
+    0,
+    0
+  ],
+  "clean_extracted_tests_run": [
+    null,
+    13,
+    50
+  ],
+  "product_integration": "NOT_CONNECTED",
+  "product_acceptance": "OPEN"
+}

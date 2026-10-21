@@ -1,0 +1,28 @@
+{
+  "runs": [
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "/tmp/p46-run-return-check-p4s889gq/submitted/04_Dmitry_SFA_P46_RUN_EVIDENCE/return/PATCH.diff"
+      ],
+      "cwd": "/tmp/p46-run-return-check-p4s889gq/patch_replay",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "/tmp/p46-run-return-check-p4s889gq/submitted/04_Dmitry_SFA_P46_RUN_EVIDENCE/return/PATCH.diff"
+      ],
+      "cwd": "/tmp/p46-run-return-check-p4s889gq/patch_replay",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "reproduced_files": 36
+}

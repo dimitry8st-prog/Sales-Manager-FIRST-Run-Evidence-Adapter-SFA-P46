@@ -1,0 +1,19 @@
+{
+  "script": "RUN_PUBLIC_TESTS.py",
+  "command": [
+    "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+    "-B",
+    "RUN_PUBLIC_TESTS.py"
+  ],
+  "cwd": "/workspace/scratch/8febe5931947/run-evidence-github/repo/04_Dmitry_SFA_P46_RUN_EVIDENCE",
+  "python_version": "3.12.14",
+  "python_full_version": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "started_at_utc": "2026-10-21T18:24:37.940901+00:00",
+  "finished_at_utc": "2026-10-21T18:24:37.995138+00:00",
+  "exit_code": 0,
+  "tests_run": 13,
+  "stdout_file": "02_RUN_PUBLIC_TESTS.stdout.log",
+  "stderr_file": "02_RUN_PUBLIC_TESTS.stderr.log",
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "c28eb5ae85a9f2eb8728b73665f0f2e2aa0c8f033c9f699cdf12fec701d4d8ce"
+}
