@@ -1,0 +1,15 @@
+{
+  "project_id": "sales-manager-first",
+  "task_id": "SFA-P46-RUN-EVIDENCE",
+  "revision": "R1",
+  "prepared_for": "Дмитрий",
+  "candidate_output": "audit_release/command_evidence.py",
+  "newly_specified_abi": true,
+  "status": "PREPARED_NOT_EXTERNALLY_ISSUED",
+  "reference_provenance": "read-only live SOURCE export 2026-10-21; exact hashes in SOURCE_MANIFEST.json",
+  "reference_manifest": {
+    "qa_completion/offline/unittest_runner.py": "86fd21691027473634a7852c58db88d3c7fb0b03c143990aeb013495dfc803f5",
+    "audit_release/unittest_evidence.py": "5d6f0d7c0aa78960f395e53cc1a44886276811ba8b1d5e3b77743a7b76958f06",
+    "audit_release/test_applicability.py": "c0bd598d5296268bb4f65b3b5426e895310f874955d079750896b286fa6567d9"
+  }
+}
